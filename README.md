@@ -10,6 +10,7 @@ It reads Bear's local SQLite database in read-only mode. It sends write and UI a
 bear --help
 bear open-note --title "My Note"
 bear search crypto
+bear duplicates
 bear create "hello" --title "CLI test" --tag rust
 ```
 
@@ -51,6 +52,7 @@ These commands read Bear's local SQLite database directly:
 - `tags`
 - `open-tag`
 - `search`
+- `duplicates`
 - `untagged`
 - `todo`
 - `today`
@@ -62,6 +64,7 @@ Examples:
 bear open-note --id 721FF116-185F-4474-8730-60D29995A4A4
 bear open-note --title "Systems Security"
 bear search Systems
+bear duplicates --json
 bear open-tag work
 bear tags
 ```

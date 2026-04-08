@@ -14,6 +14,7 @@ pub fn run() -> Result<()> {
         | Commands::Tags
         | Commands::OpenTag(_)
         | Commands::Search(_)
+        | Commands::Duplicates(_)
         | Commands::Untagged(_)
         | Commands::Todo(_)
         | Commands::Today(_)
@@ -56,6 +57,45 @@ pub fn run() -> Result<()> {
                 false,
             )? {
                 println!("{}\t{}", note.identifier, note.title);
+            }
+        }
+        Commands::Duplicates(cmd) => {
+            let groups = db
+                .as_ref()
+                .expect("db available for read command")
+                .duplicate_titles()?;
+
+            if cmd.json {
+                let total_duplicate_notes =
+                    groups.iter().map(|group| group.notes.len()).sum::<usize>();
+                let output = serde_json::json!({
+                    "duplicateGroups": groups.len(),
+                    "totalDuplicateNotes": total_duplicate_notes,
+                    "groups": groups.iter().map(|group| serde_json::json!({
+                        "title": group.title,
+                        "count": group.notes.len(),
+                        "notes": group.notes.iter().map(|note| serde_json::json!({
+                            "id": note.identifier,
+                            "modified": note.modified_at,
+                        })).collect::<Vec<_>>()
+                    })).collect::<Vec<_>>()
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else if groups.is_empty() {
+                println!("No duplicate titles found.");
+            } else {
+                println!("Found {} duplicate titles:\n", groups.len());
+                for group in groups {
+                    println!("\"{}\" ({} copies)", group.title, group.notes.len());
+                    for note in group.notes {
+                        if let Some(modified) = note.modified_at {
+                            println!("  {}\t{}", note.identifier, modified);
+                        } else {
+                            println!("  {}", note.identifier);
+                        }
+                    }
+                    println!();
+                }
             }
         }
         Commands::Untagged(cmd) => {

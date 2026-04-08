@@ -14,6 +14,18 @@ pub struct NoteListItem {
     pub title: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateNote {
+    pub identifier: String,
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DuplicateGroup {
+    pub title: String,
+    pub notes: Vec<DuplicateNote>,
+}
+
 pub struct BearDb {
     connection: Connection,
 }
@@ -202,6 +214,50 @@ impl BearDb {
         }
     }
 
+    pub fn duplicate_titles(&self) -> Result<Vec<DuplicateGroup>> {
+        let mut stmt = self.connection.prepare(
+            "select coalesce(ZTITLE, ''), ZUNIQUEIDENTIFIER, ZMODIFICATIONDATE
+             from ZSFNOTE
+             where ZTRASHED = 0
+               and ZPERMANENTLYDELETED = 0
+               and trim(coalesce(ZTITLE, '')) <> ''
+             order by lower(trim(coalesce(ZTITLE, ''))) asc, ZMODIFICATIONDATE desc",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<f64>>(2)?,
+            ))
+        })?;
+
+        let mut groups = std::collections::BTreeMap::<String, Vec<DuplicateNote>>::new();
+
+        for row in rows {
+            let (title, identifier, modified_at) = row?;
+            let trimmed_title = title.trim().to_string();
+            groups
+                .entry(trimmed_title)
+                .or_default()
+                .push(DuplicateNote {
+                    identifier,
+                    modified_at: modified_at.map(|value| value.to_string()),
+                });
+        }
+
+        Ok(groups
+            .into_iter()
+            .filter_map(|(title, notes)| {
+                if notes.len() > 1 {
+                    Some(DuplicateGroup { title, notes })
+                } else {
+                    None
+                }
+            })
+            .collect())
+    }
+
     pub fn untagged(&self, search: Option<&str>) -> Result<Vec<NoteListItem>> {
         let like = format!("%{}%", search.unwrap_or_default());
         let mut stmt = self.connection.prepare(
@@ -292,7 +348,7 @@ impl BearDb {
 mod tests {
     use rusqlite::Connection;
 
-    use super::{BearDb, NoteListItem};
+    use super::{BearDb, DuplicateGroup, DuplicateNote, NoteListItem};
 
     fn test_db() -> BearDb {
         let connection = Connection::open_in_memory().expect("in-memory db");
@@ -325,7 +381,9 @@ mod tests {
                 insert into ZSFNOTE values
                     (1, 0, 0, 0, 0, 0, 1, 1, 10, 'Alpha', 'alpha body', 'NOTE-1'),
                     (2, 0, 0, 0, 0, 0, 0, 0, 20, 'Beta', 'beta body', 'NOTE-2'),
-                    (3, 1, 0, 0, 0, 0, 0, 0, 30, 'Trash', 'trashed', 'NOTE-3');
+                    (3, 1, 0, 0, 0, 0, 0, 0, 30, 'Trash', 'trashed', 'NOTE-3'),
+                    (4, 0, 0, 0, 0, 0, 0, 0, 40, 'Alpha', 'another alpha', 'NOTE-4'),
+                    (5, 0, 0, 0, 0, 0, 0, 0, 50, '  ', 'blank title', 'NOTE-5');
                 insert into ZSFNOTETAG values
                     (10, 0, 'work'),
                     (11, 0, 'misc');
@@ -345,7 +403,7 @@ mod tests {
         let note = db
             .find_note(None, Some("Alpha"), false)
             .expect("note should exist");
-        assert_eq!(note.text, "alpha body");
+        assert_eq!(note.text, "another alpha");
     }
 
     #[test]
@@ -380,6 +438,31 @@ mod tests {
             vec![NoteListItem {
                 identifier: "NOTE-1".into(),
                 title: "Alpha".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn finds_duplicate_titles() {
+        let db = test_db();
+        let groups = db
+            .duplicate_titles()
+            .expect("duplicate detection should work");
+
+        assert_eq!(
+            groups,
+            vec![DuplicateGroup {
+                title: "Alpha".into(),
+                notes: vec![
+                    DuplicateNote {
+                        identifier: "NOTE-4".into(),
+                        modified_at: Some("40".into()),
+                    },
+                    DuplicateNote {
+                        identifier: "NOTE-1".into(),
+                        modified_at: Some("10".into()),
+                    },
+                ],
             }]
         );
     }
