@@ -15,6 +15,7 @@ pub fn run() -> Result<()> {
         | Commands::OpenTag(_)
         | Commands::Search(_)
         | Commands::Duplicates(_)
+        | Commands::Stats(_)
         | Commands::Untagged(_)
         | Commands::Todo(_)
         | Commands::Today(_)
@@ -95,6 +96,56 @@ pub fn run() -> Result<()> {
                         }
                     }
                     println!();
+                }
+            }
+        }
+        Commands::Stats(cmd) => {
+            let summary = db
+                .as_ref()
+                .expect("db available for read command")
+                .stats_summary()?;
+            let untagged_notes = summary.total_notes.saturating_sub(summary.tagged_notes);
+
+            if cmd.json {
+                let output = serde_json::json!({
+                    "totalNotes": summary.total_notes,
+                    "pinnedNotes": summary.pinned_notes,
+                    "taggedNotes": summary.tagged_notes,
+                    "untaggedNotes": untagged_notes,
+                    "archivedNotes": summary.archived_notes,
+                    "trashedNotes": summary.trashed_notes,
+                    "uniqueTags": summary.unique_tags,
+                    "totalWords": summary.total_words,
+                    "notesWithTodos": summary.notes_with_todos,
+                    "oldestModified": summary.oldest_modified,
+                    "newestModified": summary.newest_modified,
+                    "topTags": summary.top_tags.iter().map(|(tag, count)| serde_json::json!({
+                        "tag": tag,
+                        "count": count,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                println!("Notes: {}", summary.total_notes);
+                println!("Pinned: {}", summary.pinned_notes);
+                println!("Tagged: {}", summary.tagged_notes);
+                println!("Untagged: {}", untagged_notes);
+                println!("Archived: {}", summary.archived_notes);
+                println!("Trashed: {}", summary.trashed_notes);
+                println!("Tags: {}", summary.unique_tags);
+                println!("Words: {}", summary.total_words);
+                println!("Notes with TODOs: {}", summary.notes_with_todos);
+                if let Some(oldest) = summary.oldest_modified {
+                    println!("Oldest modified: {}", oldest);
+                }
+                if let Some(newest) = summary.newest_modified {
+                    println!("Newest modified: {}", newest);
+                }
+                if !summary.top_tags.is_empty() {
+                    println!("\nTop tags:");
+                    for (tag, count) in summary.top_tags {
+                        println!("  #{}: {}", tag, count);
+                    }
                 }
             }
         }

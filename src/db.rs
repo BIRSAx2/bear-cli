@@ -26,6 +26,21 @@ pub struct DuplicateGroup {
     pub notes: Vec<DuplicateNote>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatsSummary {
+    pub total_notes: usize,
+    pub pinned_notes: usize,
+    pub tagged_notes: usize,
+    pub archived_notes: usize,
+    pub trashed_notes: usize,
+    pub unique_tags: usize,
+    pub total_words: usize,
+    pub notes_with_todos: usize,
+    pub oldest_modified: Option<i64>,
+    pub newest_modified: Option<i64>,
+    pub top_tags: Vec<(String, usize)>,
+}
+
 pub struct BearDb {
     connection: Connection,
 }
@@ -258,6 +273,105 @@ impl BearDb {
             .collect())
     }
 
+    pub fn stats_summary(&self) -> Result<StatsSummary> {
+        let mut stmt = self.connection.prepare(
+            "select coalesce(ZTITLE, ''), coalesce(ZTEXT, ''), ZTRASHED, ZARCHIVED, ZPINNED, ZMODIFICATIONDATE
+             from ZSFNOTE
+             where ZPERMANENTLYDELETED = 0",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<f64>>(5)?,
+            ))
+        })?;
+
+        let tags = self.tags()?;
+        let mut total_notes = 0usize;
+        let mut pinned_notes = 0usize;
+        let mut tagged_notes = 0usize;
+        let mut archived_notes = 0usize;
+        let mut trashed_notes = 0usize;
+        let mut total_words = 0usize;
+        let mut notes_with_todos = 0usize;
+        let mut oldest_modified: Option<i64> = None;
+        let mut newest_modified: Option<i64> = None;
+
+        let mut tag_counts = std::collections::BTreeMap::<String, usize>::new();
+
+        let note_tags = self.note_tag_map()?;
+
+        for row in rows {
+            let (_title, text, trashed, archived, pinned, modified_at) = row?;
+
+            if trashed == 1 {
+                trashed_notes += 1;
+                continue;
+            }
+
+            total_notes += 1;
+            if pinned == 1 {
+                pinned_notes += 1;
+            }
+            if archived == 1 {
+                archived_notes += 1;
+            }
+            if text.contains("- [ ]") {
+                notes_with_todos += 1;
+            }
+            total_words += text
+                .split_whitespace()
+                .filter(|part| !part.is_empty())
+                .count();
+
+            if let Some(modified_at) = modified_at.map(|value| value as i64) {
+                oldest_modified = Some(match oldest_modified {
+                    Some(current) => current.min(modified_at),
+                    None => modified_at,
+                });
+                newest_modified = Some(match newest_modified {
+                    Some(current) => current.max(modified_at),
+                    None => modified_at,
+                });
+            }
+        }
+
+        for (note_id, tags) in note_tags {
+            if self.is_trashed(&note_id)? {
+                continue;
+            }
+            if !tags.is_empty() {
+                tagged_notes += 1;
+            }
+            for tag in tags {
+                *tag_counts.entry(tag).or_default() += 1;
+            }
+        }
+
+        let mut top_tags = tag_counts.into_iter().collect::<Vec<_>>();
+        top_tags.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+        top_tags.truncate(10);
+
+        Ok(StatsSummary {
+            total_notes,
+            pinned_notes,
+            tagged_notes,
+            archived_notes,
+            trashed_notes,
+            unique_tags: tags.len(),
+            total_words,
+            notes_with_todos,
+            oldest_modified,
+            newest_modified,
+            top_tags,
+        })
+    }
+
     pub fn untagged(&self, search: Option<&str>) -> Result<Vec<NoteListItem>> {
         let like = format!("%{}%", search.unwrap_or_default());
         let mut stmt = self.connection.prepare(
@@ -342,13 +456,45 @@ impl BearDb {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
+
+    fn note_tag_map(&self) -> Result<std::collections::BTreeMap<String, Vec<String>>> {
+        let mut stmt = self.connection.prepare(
+            "select n.ZUNIQUEIDENTIFIER, t.ZTITLE
+             from ZSFNOTE n
+             left join Z_5TAGS nt on nt.Z_5NOTES = n.Z_PK
+             left join ZSFNOTETAG t on t.Z_PK = nt.Z_13TAGS
+             where n.ZPERMANENTLYDELETED = 0",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+
+        let mut map = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for row in rows {
+            let (note_id, tag) = row?;
+            let entry = map.entry(note_id).or_default();
+            if let Some(tag) = tag {
+                entry.push(tag);
+            }
+        }
+        Ok(map)
+    }
+
+    fn is_trashed(&self, note_id: &str) -> Result<bool> {
+        let mut stmt = self
+            .connection
+            .prepare("select ZTRASHED from ZSFNOTE where ZUNIQUEIDENTIFIER = ?1 limit 1")?;
+        let trashed = stmt.query_row([note_id], |row| row.get::<_, i64>(0))?;
+        Ok(trashed == 1)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
 
-    use super::{BearDb, DuplicateGroup, DuplicateNote, NoteListItem};
+    use super::{BearDb, DuplicateGroup, DuplicateNote, NoteListItem, StatsSummary};
 
     fn test_db() -> BearDb {
         let connection = Connection::open_in_memory().expect("in-memory db");
@@ -359,6 +505,7 @@ mod tests {
                     Z_PK integer primary key,
                     ZTRASHED integer,
                     ZARCHIVED integer,
+                    ZPINNED integer,
                     ZENCRYPTED integer,
                     ZLOCKED integer,
                     ZPERMANENTLYDELETED integer,
@@ -379,16 +526,17 @@ mod tests {
                     Z_13TAGS integer
                 );
                 insert into ZSFNOTE values
-                    (1, 0, 0, 0, 0, 0, 1, 1, 10, 'Alpha', 'alpha body', 'NOTE-1'),
-                    (2, 0, 0, 0, 0, 0, 0, 0, 20, 'Beta', 'beta body', 'NOTE-2'),
-                    (3, 1, 0, 0, 0, 0, 0, 0, 30, 'Trash', 'trashed', 'NOTE-3'),
-                    (4, 0, 0, 0, 0, 0, 0, 0, 40, 'Alpha', 'another alpha', 'NOTE-4'),
-                    (5, 0, 0, 0, 0, 0, 0, 0, 50, '  ', 'blank title', 'NOTE-5');
+                    (1, 0, 0, 1, 0, 0, 0, 1, 1, 10, 'Alpha', 'alpha body - [ ]', 'NOTE-1'),
+                    (2, 0, 1, 0, 0, 0, 0, 0, 0, 20, 'Beta', 'beta body', 'NOTE-2'),
+                    (3, 1, 0, 0, 0, 0, 0, 0, 0, 30, 'Trash', 'trashed', 'NOTE-3'),
+                    (4, 0, 0, 0, 0, 0, 0, 0, 0, 40, 'Alpha', 'another alpha', 'NOTE-4'),
+                    (5, 0, 0, 0, 0, 0, 0, 0, 0, 50, '  ', 'blank title', 'NOTE-5');
                 insert into ZSFNOTETAG values
                     (10, 0, 'work'),
                     (11, 0, 'misc');
                 insert into Z_5TAGS values
                     (1, 10),
+                    (2, 10),
                     (3, 11);
                 ",
             )
@@ -414,16 +562,10 @@ mod tests {
             .expect("search should work");
         assert_eq!(
             notes,
-            vec![
-                NoteListItem {
-                    identifier: "NOTE-1".into(),
-                    title: "Alpha".into()
-                },
-                NoteListItem {
-                    identifier: "NOTE-2".into(),
-                    title: "Beta".into()
-                }
-            ]
+            vec![NoteListItem {
+                identifier: "NOTE-1".into(),
+                title: "Alpha".into()
+            }]
         );
     }
 
@@ -435,10 +577,16 @@ mod tests {
             .expect("tag lookup should work");
         assert_eq!(
             notes,
-            vec![NoteListItem {
-                identifier: "NOTE-1".into(),
-                title: "Alpha".into()
-            }]
+            vec![
+                NoteListItem {
+                    identifier: "NOTE-1".into(),
+                    title: "Alpha".into()
+                },
+                NoteListItem {
+                    identifier: "NOTE-2".into(),
+                    title: "Beta".into()
+                }
+            ]
         );
     }
 
@@ -464,6 +612,29 @@ mod tests {
                     },
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn computes_stats_summary() {
+        let db = test_db();
+        let summary = db.stats_summary().expect("stats should compute");
+
+        assert_eq!(
+            summary,
+            StatsSummary {
+                total_notes: 4,
+                pinned_notes: 1,
+                tagged_notes: 2,
+                archived_notes: 1,
+                trashed_notes: 1,
+                unique_tags: 2,
+                total_words: 11,
+                notes_with_todos: 1,
+                oldest_modified: Some(10),
+                newest_modified: Some(50),
+                top_tags: vec![("work".into(), 2)],
+            }
         );
     }
 }

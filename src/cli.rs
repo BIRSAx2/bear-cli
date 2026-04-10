@@ -26,6 +26,7 @@ pub enum Commands {
     OpenTag(OpenTagCommand),
     Search(SearchCommand),
     Duplicates(DuplicatesCommand),
+    Stats(StatsCommand),
     Untagged(FilterCommand),
     Todo(FilterCommand),
     Today(FilterCommand),
@@ -70,6 +71,12 @@ pub struct SearchCommand {
 
 #[derive(Args, Debug)]
 pub struct DuplicatesCommand {
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct StatsCommand {
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
