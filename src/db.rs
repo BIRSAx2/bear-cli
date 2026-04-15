@@ -24,6 +24,17 @@ pub struct SearchResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportNote {
+    pub identifier: String,
+    pub title: String,
+    pub text: String,
+    pub pinned: bool,
+    pub created_at: Option<i64>,
+    pub modified_at: Option<i64>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DuplicateNote {
     pub identifier: String,
     pub modified_at: Option<String>,
@@ -290,6 +301,86 @@ impl BearDb {
         });
 
         Ok(results)
+    }
+
+    pub fn export_notes(&self, tag: Option<&str>) -> Result<Vec<ExportNote>> {
+        let sql = if tag.is_some() {
+            "select distinct n.ZUNIQUEIDENTIFIER, coalesce(n.ZTITLE, ''), coalesce(n.ZTEXT, ''), n.ZPINNED, n.ZCREATIONDATE, n.ZMODIFICATIONDATE
+             from ZSFNOTE n
+             join Z_5TAGS nt on nt.Z_5NOTES = n.Z_PK
+             join ZSFNOTETAG t on t.Z_PK = nt.Z_13TAGS
+             where t.ZTITLE = ?1
+               and n.ZTRASHED = 0
+               and n.ZENCRYPTED = 0
+               and n.ZLOCKED = 0
+               and n.ZPERMANENTLYDELETED = 0
+             order by lower(coalesce(n.ZTITLE, '')) asc"
+        } else {
+            "select ZUNIQUEIDENTIFIER, coalesce(ZTITLE, ''), coalesce(ZTEXT, ''), ZPINNED, ZCREATIONDATE, ZMODIFICATIONDATE
+             from ZSFNOTE
+             where ZTRASHED = 0
+               and ZENCRYPTED = 0
+               and ZLOCKED = 0
+               and ZPERMANENTLYDELETED = 0
+             order by lower(coalesce(ZTITLE, '')) asc"
+        };
+
+        let note_tags = self.note_tag_map()?;
+        let mut notes = Vec::new();
+
+        if let Some(tag) = tag {
+            let mut stmt = self.connection.prepare(sql)?;
+            let rows = stmt.query_map([tag], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (identifier, title, text, pinned, created_at, modified_at) = row?;
+                notes.push(ExportNote {
+                    tags: note_tags.get(&identifier).cloned().unwrap_or_default(),
+                    identifier,
+                    title,
+                    text,
+                    pinned: pinned == 1,
+                    created_at: created_at.map(|value| value as i64),
+                    modified_at: modified_at.map(|value| value as i64),
+                });
+            }
+        } else {
+            let mut stmt = self.connection.prepare(sql)?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                ))
+            })?;
+
+            for row in rows {
+                let (identifier, title, text, pinned, created_at, modified_at) = row?;
+                notes.push(ExportNote {
+                    tags: note_tags.get(&identifier).cloned().unwrap_or_default(),
+                    identifier,
+                    title,
+                    text,
+                    pinned: pinned == 1,
+                    created_at: created_at.map(|value| value as i64),
+                    modified_at: modified_at.map(|value| value as i64),
+                });
+            }
+        }
+
+        Ok(notes)
     }
 
     pub fn duplicate_titles(&self) -> Result<Vec<DuplicateGroup>> {
@@ -693,6 +784,7 @@ mod tests {
                     ZPERMANENTLYDELETED integer,
                     ZTODOINCOMPLETED integer,
                     ZSHOWNINTODAYWIDGET integer,
+                    ZCREATIONDATE integer,
                     ZMODIFICATIONDATE integer,
                     ZTITLE text,
                     ZTEXT text,
@@ -708,15 +800,15 @@ mod tests {
                     Z_13TAGS integer
                 );
                 insert into ZSFNOTE values
-                    (1, 0, 0, 1, 0, 0, 0, 1, 1, 10, 'Alpha', 'alpha body - [ ]', 'NOTE-1'),
-                    (2, 0, 1, 0, 0, 0, 0, 0, 0, 20, 'Beta', 'beta body', 'NOTE-2'),
-                    (3, 1, 0, 0, 0, 0, 0, 0, 0, 1, 'Trash', 'trashed', 'NOTE-3'),
-                    (4, 0, 0, 0, 0, 0, 0, 0, 0, 40, 'Alpha', 'another alpha with rust body', 'NOTE-4'),
-                    (5, 0, 0, 0, 0, 0, 0, 0, 0, 50, '  ', 'blank title', 'NOTE-5'),
-                    (6, 0, 0, 0, 0, 0, 0, 0, 0, 60, 'Conflict copy', '', 'NOTE-6'),
-                    (7, 0, 0, 0, 0, 0, 0, 0, 0, 70, 'Gamma', 'body mention with   rust across
+                    (1, 0, 0, 1, 0, 0, 0, 1, 1, 5, 10, 'Alpha', 'alpha body - [ ]', 'NOTE-1'),
+                    (2, 0, 1, 0, 0, 0, 0, 0, 0, 15, 20, 'Beta', 'beta body', 'NOTE-2'),
+                    (3, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 'Trash', 'trashed', 'NOTE-3'),
+                    (4, 0, 0, 0, 0, 0, 0, 0, 0, 35, 40, 'Alpha', 'another alpha with rust body', 'NOTE-4'),
+                    (5, 0, 0, 0, 0, 0, 0, 0, 0, 45, 50, '  ', 'blank title', 'NOTE-5'),
+                    (6, 0, 0, 0, 0, 0, 0, 0, 0, 55, 60, 'Conflict copy', '', 'NOTE-6'),
+                    (7, 0, 0, 0, 0, 0, 0, 0, 0, 65, 70, 'Gamma', 'body mention with   rust across
 lines', 'NOTE-7'),
-                    (8, 0, 0, 0, 0, 0, 0, 0, 0, 80, 'Rust title', 'no body hit here', 'NOTE-8');
+                    (8, 0, 0, 0, 0, 0, 0, 0, 0, 75, 80, 'Rust title', 'no body hit here', 'NOTE-8');
                 insert into ZSFNOTETAG values
                     (10, 0, 'work'),
                     (11, 0, 'misc'),
@@ -904,5 +996,18 @@ lines', 'NOTE-7'),
             result.snippet,
             Some("body mention with rust across lines".into())
         );
+    }
+
+    #[test]
+    fn exports_notes_with_tags() {
+        let db = test_db();
+        let notes = db
+            .export_notes(Some("rust"))
+            .expect("export query should work");
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].identifier, "NOTE-7");
+        assert_eq!(notes[0].tags, vec!["rust".to_string()]);
+        assert_eq!(notes[0].created_at, Some(65));
     }
 }

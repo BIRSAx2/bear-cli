@@ -25,6 +25,7 @@ pub enum Commands {
     Tags,
     OpenTag(OpenTagCommand),
     Search(SearchCommand),
+    Export(ExportCommand),
     Duplicates(DuplicatesCommand),
     Stats(StatsCommand),
     Health(HealthCommand),
@@ -80,6 +81,17 @@ pub struct SearchCommand {
 pub struct DuplicatesCommand {
     #[arg(long, default_value_t = false)]
     pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct ExportCommand {
+    pub output: PathBuf,
+    #[arg(long)]
+    pub tag: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub frontmatter: bool,
+    #[arg(long = "by-tag", default_value_t = false)]
+    pub by_tag: bool,
 }
 
 #[derive(Args, Debug)]

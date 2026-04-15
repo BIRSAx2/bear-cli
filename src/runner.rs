@@ -7,6 +7,7 @@ use crate::cli::Commands;
 use crate::config::{encode_file, load_token, resolve_database_path, save_token};
 use crate::dates::parse_bear_date_filter;
 use crate::db::BearDb;
+use crate::export::export_notes;
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -15,6 +16,7 @@ pub fn run() -> Result<()> {
         | Commands::Tags
         | Commands::OpenTag(_)
         | Commands::Search(_)
+        | Commands::Export(_)
         | Commands::Duplicates(_)
         | Commands::Stats(_)
         | Commands::Health(_)
@@ -91,6 +93,18 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+        }
+        Commands::Export(cmd) => {
+            let notes = db
+                .as_ref()
+                .expect("db available for read command")
+                .export_notes(cmd.tag.as_deref())?;
+            let written = export_notes(&cmd.output, &notes, cmd.frontmatter, cmd.by_tag)?;
+            println!(
+                "Exported {} note(s) to {}",
+                written.len(),
+                cmd.output.display()
+            );
         }
         Commands::Duplicates(cmd) => {
             let groups = db

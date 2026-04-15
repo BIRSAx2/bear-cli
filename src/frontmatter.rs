@@ -153,6 +153,14 @@ fn unquote(value: &str) -> String {
 }
 
 fn quote_if_needed(value: &str) -> String {
+    let looks_like_scalar = matches!(
+        parse_value(value),
+        FrontMatterValue::Bool(_) | FrontMatterValue::Integer(_) | FrontMatterValue::Array(_)
+    );
+    if looks_like_scalar {
+        return value.to_string();
+    }
+
     let needs_quotes = value.is_empty()
         || value.starts_with(' ')
         || value.ends_with(' ')
@@ -270,7 +278,7 @@ mod tests {
 
         assert_eq!(
             text,
-            "---\ntitle: Test\ntags: \"[rust, bear]\"\ndraft: false\n---\n# Title\n\nBody"
+            "---\ntitle: Test\ntags: [rust, bear]\ndraft: false\n---\n# Title\n\nBody"
         );
     }
 
