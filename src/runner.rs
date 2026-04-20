@@ -86,7 +86,6 @@ pub fn run() -> Result<()> {
             println!("CloudKit auth token saved.");
         }
 
-        // ── Read commands (CloudKit) ──────────────────────────────────────────
         Commands::OpenNote(cmd) => {
             let ck = load_ck()?;
             let note = resolve_note(
@@ -98,9 +97,20 @@ pub fn run() -> Result<()> {
             )?;
             println!("{}", note.str_field("textADP").unwrap_or(""));
         }
+        Commands::InspectNote(cmd) => {
+            let ck = load_ck()?;
+            let note = if let Some(id) = cmd.id.as_deref() {
+                ck.fetch_note(id)?
+            } else if let Some(title) = cmd.title.as_deref() {
+                ck.fetch_note_by_title(title, !cmd.exclude_trashed, true)?
+            } else {
+                bail!("provide --id or --title");
+            };
+            println!("{}", serde_json::to_string_pretty(&note)?);
+        }
         Commands::Tags => {
             for tag in load_ck()?.list_tags()? {
-                if let Some(name) = tag.str_field("name") {
+                if let Some(name) = tag.str_field("title") {
                     println!("{name}");
                 }
             }
@@ -180,6 +190,34 @@ pub fn run() -> Result<()> {
                             "tags": note.fields.get("tagsStrings").and_then(|f| f.value.as_array()).map(|arr|
                                 arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>()
                             ).unwrap_or_default(),
+                        })).collect::<Vec<_>>()
+                    }))?
+                );
+            } else {
+                for note in notes {
+                    let title = note.str_field("title").unwrap_or("");
+                    println!("{}\t{}", note.record_name, title);
+                }
+            }
+        }
+        Commands::PhantomNotes(cmd) => {
+            let ck = load_ck()?;
+            let notes = ck.list_phantom_notes(cmd.limit)?;
+
+            if cmd.delete {
+                let deleted = ck.delete_phantom_notes(&notes)?;
+                println!("Deleted {} phantom note(s).", deleted.len());
+            } else if cmd.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "notes": notes.iter().map(|note| serde_json::json!({
+                            "recordName": note.record_name,
+                            "id": note.str_field("uniqueIdentifier"),
+                            "title": note.str_field("title"),
+                            "subtitle": note.str_field("subtitleADP"),
+                            "created": note.i64_field("sf_creationDate"),
+                            "modified": note.i64_field("sf_modificationDate"),
                         })).collect::<Vec<_>>()
                     }))?
                 );
@@ -369,7 +407,6 @@ pub fn run() -> Result<()> {
             }
         }
 
-        // ── Write commands (CloudKit) ─────────────────────────────────────────
         Commands::Create(cmd) => {
             let text = read_text(cmd.text)?;
             let ck = load_ck()?;
@@ -435,6 +472,13 @@ pub fn run() -> Result<()> {
             println!("Trashed {record_name}");
         }
 
+        Commands::Delete(cmd) => {
+            let ck = load_ck()?;
+            let record_name = resolve_note_id(cmd.id.as_deref(), cmd.search.as_deref(), &ck)?;
+            ck.delete_note(&record_name)?;
+            println!("Deleted {record_name}");
+        }
+
         Commands::Archive(cmd) => {
             let ck = load_ck()?;
             let record_name = resolve_note_id(cmd.id.as_deref(), cmd.search.as_deref(), &ck)?;
@@ -445,15 +489,14 @@ pub fn run() -> Result<()> {
         Commands::RenameTag(cmd) => {
             let ck = load_ck()?;
             let tag_uuid = resolve_tag_id(&cmd.name, &ck)?;
-            // Fetch the tag record and update its name field
-            let record = ck.fetch_note(&tag_uuid)?; // SFNoteTag uses same lookup
+            let record = ck.fetch_tag(&tag_uuid)?;
             let change_tag = record
                 .record_change_tag
                 .clone()
                 .ok_or_else(|| anyhow!("tag record has no recordChangeTag"))?;
             let mut fields = crate::cloudkit::models::Fields::new();
             fields.insert(
-                "name".into(),
+                "title".into(),
                 crate::cloudkit::models::CkField::string(&cmd.new_name),
             );
             fields.insert(
@@ -462,11 +505,16 @@ pub fn run() -> Result<()> {
             );
             ck.modify(vec![crate::cloudkit::models::ModifyOperation {
                 operation_type: "update".into(),
+                record_type: "SFNoteTag".into(),
                 record: crate::cloudkit::models::CkRecord {
                     record_name: tag_uuid,
                     record_type: "SFNoteTag".into(),
+                    zone_id: None,
                     fields,
+                    plugin_fields: std::collections::HashMap::new(),
                     record_change_tag: Some(change_tag),
+                    created: record.created.clone(),
+                    modified: record.modified.clone(),
                     deleted: false,
                     server_error_code: None,
                     reason: None,
@@ -478,18 +526,23 @@ pub fn run() -> Result<()> {
         Commands::DeleteTag(cmd) => {
             let ck = load_ck()?;
             let tag_uuid = resolve_tag_id(&cmd.name, &ck)?;
-            let record = ck.fetch_note(&tag_uuid)?;
+            let record = ck.fetch_tag(&tag_uuid)?;
             let change_tag = record
                 .record_change_tag
                 .clone()
                 .ok_or_else(|| anyhow!("tag record has no recordChangeTag"))?;
             ck.modify(vec![crate::cloudkit::models::ModifyOperation {
                 operation_type: "delete".into(),
+                record_type: "SFNoteTag".into(),
                 record: crate::cloudkit::models::CkRecord {
                     record_name: tag_uuid,
                     record_type: "SFNoteTag".into(),
+                    zone_id: None,
                     fields: std::collections::HashMap::new(),
+                    plugin_fields: std::collections::HashMap::new(),
                     record_change_tag: Some(change_tag),
+                    created: record.created.clone(),
+                    modified: record.modified.clone(),
                     deleted: true,
                     server_error_code: None,
                     reason: None,
@@ -555,7 +608,7 @@ fn resolve_note_by_title_with_flags(
 fn resolve_tag_id(name: &str, ck: &CloudKitClient) -> Result<String> {
     ck.list_tags()?
         .into_iter()
-        .find(|tag| tag.str_field("name") == Some(name))
+        .find(|tag| tag.str_field("title") == Some(name))
         .map(|tag| tag.record_name)
         .ok_or_else(|| anyhow!("tag not found: {name}"))
 }

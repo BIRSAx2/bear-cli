@@ -12,8 +12,6 @@ use super::vector_clock;
 pub const API_TOKEN: &str = "ce59f955ec47e744f720aa1d2816a4e985e472d8b859b6c7a47b81fd36646307";
 const BASE_URL: &str =
     "https://api.apple-cloudkit.com/database/1/iCloud.net.shinyfrog.bear/production/private";
-const DEVICE_NAME: &str = "Bear CLI";
-
 pub struct CloudKitClient {
     http: Client,
     auth: AuthConfig,
@@ -28,11 +26,18 @@ impl CloudKitClient {
         Ok(Self { http, auth })
     }
 
+    fn device_name(&self) -> &'static str {
+        "Bear CLI"
+    }
+
+    fn vector_clock_device(&self) -> &'static str {
+        "Bear CLI"
+    }
+
     fn url(&self, path: &str) -> String {
-        // Apple CloudKit decodes '+' as space — must percent-encode it explicitly.
         let token = self.auth.ck_web_auth_token.replace('+', "%2B");
-        let api = API_TOKEN.replace('+', "%2B");
-        format!("{BASE_URL}{path}?ckWebAuthToken={token}&ckAPIToken={api}")
+        let api_token = API_TOKEN.replace('+', "%2B");
+        format!("{BASE_URL}{path}?ckWebAuthToken={token}&ckAPIToken={api_token}")
     }
 
     fn post<Req, Res>(&self, path: &str, body: &Req) -> Result<Res>
@@ -40,9 +45,10 @@ impl CloudKitClient {
         Req: serde::Serialize,
         Res: serde::de::DeserializeOwned,
     {
+        let url = self.url(path);
         let resp = self
             .http
-            .post(self.url(path))
+            .post(url)
             .header("Content-Type", "application/json")
             .json(body)
             .send()
@@ -53,15 +59,25 @@ impl CloudKitClient {
             let body = resp.text().unwrap_or_default();
             bail!("CloudKit {path} returned {status}: {body}");
         }
-
-        resp.json::<Res>()
+        let text = resp
+            .text()
+            .with_context(|| format!("failed reading response from {path}"))?;
+        serde_json::from_str::<Res>(&text)
             .with_context(|| format!("failed to parse response from {path}"))
     }
 
     pub fn modify(&self, ops: Vec<ModifyOperation>) -> Result<Vec<CkRecord>> {
+        self.modify_in_zone(ZoneId::notes(), ops)
+    }
+
+    pub fn modify_in_zone(
+        &self,
+        zone_id: ZoneId,
+        ops: Vec<ModifyOperation>,
+    ) -> Result<Vec<CkRecord>> {
         let req = ModifyRequest {
             operations: ops,
-            zone_id: ZoneId::default(),
+            zone_id,
         };
         let resp: ModifyResponse = self.post("/records/modify", &req)?;
 
@@ -85,6 +101,29 @@ impl CloudKitClient {
 
     pub fn list_notes(
         &self,
+        include_trashed: bool,
+        include_archived: bool,
+        limit: Option<usize>,
+    ) -> Result<Vec<CkRecord>> {
+        self.list_notes_in_zone(ZoneId::notes(), include_trashed, include_archived, limit)
+    }
+
+    pub fn list_phantom_notes(&self, limit: Option<usize>) -> Result<Vec<CkRecord>> {
+        Ok(self
+            .list_notes_in_zone(ZoneId::default_zone(), true, true, limit)?
+            .into_iter()
+            .filter(|record| {
+                record
+                    .zone_id
+                    .as_ref()
+                    .is_some_and(|zone| zone.zone_name == "_defaultZone")
+            })
+            .collect())
+    }
+
+    fn list_notes_in_zone(
+        &self,
+        zone_id: ZoneId,
         include_trashed: bool,
         include_archived: bool,
         limit: Option<usize>,
@@ -121,7 +160,7 @@ impl CloudKitClient {
             }
 
             let req = QueryRequest {
-                zone_id: ZoneId::default(),
+                zone_id: zone_id.clone(),
                 query: CkQuery {
                     record_type: "SFNote".into(),
                     filter_by: filters.clone(),
@@ -163,6 +202,35 @@ impl CloudKitClient {
         Ok(records)
     }
 
+    pub fn delete_phantom_notes(&self, records: &[CkRecord]) -> Result<Vec<CkRecord>> {
+        let ops = records
+            .iter()
+            .map(|record| {
+                let change_tag = record.record_change_tag.clone().ok_or_else(|| {
+                    anyhow!("phantom note {} has no recordChangeTag", record.record_name)
+                })?;
+                Ok(ModifyOperation {
+                    operation_type: "delete".into(),
+                    record_type: "SFNote".into(),
+                    record: CkRecord {
+                        record_name: record.record_name.clone(),
+                        record_type: "SFNote".into(),
+                        zone_id: None,
+                        fields: HashMap::new(),
+                        plugin_fields: HashMap::new(),
+                        record_change_tag: Some(change_tag),
+                        created: record.created.clone(),
+                        modified: record.modified.clone(),
+                        deleted: true,
+                        server_error_code: None,
+                        reason: None,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.modify_in_zone(ZoneId::default_zone(), ops)
+    }
+
     pub fn list_tags(&self) -> Result<Vec<CkRecord>> {
         let mut records = Vec::new();
         let mut marker = None;
@@ -174,12 +242,12 @@ impl CloudKitClient {
                     record_type: "SFNoteTag".into(),
                     filter_by: vec![],
                     sort_by: vec![CkSort {
-                        field_name: "name".into(),
+                        field_name: "title".into(),
                         ascending: true,
                     }],
                 },
                 results_limit: Some(500),
-                desired_keys: Some(vec!["name".into(), "sf_modificationDate".into()]),
+                desired_keys: Some(vec!["title".into(), "sf_modificationDate".into()]),
                 continuation_marker: marker,
             })?;
             records.extend(resp.records);
@@ -196,8 +264,8 @@ impl CloudKitClient {
         let req = LookupRequest {
             records: record_names
                 .iter()
-                .map(|n| LookupRecord {
-                    record_name: n.to_string(),
+                .map(|name| LookupRecord {
+                    record_name: (*name).to_string(),
                 })
                 .collect(),
             zone_id: ZoneId::default(),
@@ -206,12 +274,94 @@ impl CloudKitClient {
         Ok(resp.records)
     }
 
+    /// Fetch a single SFNote by its uniqueIdentifier (which equals its CloudKit recordName).
     pub fn fetch_note(&self, record_name: &str) -> Result<CkRecord> {
-        let records = self.lookup(&[record_name])?;
-        records
+        self.lookup(&[record_name])?
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("note not found: {record_name}"))
+    }
+
+    pub fn fetch_note_by_title(
+        &self,
+        title: &str,
+        include_trashed: bool,
+        include_archived: bool,
+    ) -> Result<CkRecord> {
+        let mut filter_by = vec![CkFilter {
+            field_name: "title".into(),
+            comparator: "EQUALS".into(),
+            field_value: CkFilterValue {
+                value: title.to_string().into(),
+                kind: "STRING".into(),
+            },
+        }];
+        if !include_trashed {
+            filter_by.push(CkFilter {
+                field_name: "trashed".into(),
+                comparator: "EQUALS".into(),
+                field_value: CkFilterValue {
+                    value: 0.into(),
+                    kind: "INT64".into(),
+                },
+            });
+        }
+        if !include_archived {
+            filter_by.push(CkFilter {
+                field_name: "archived".into(),
+                comparator: "EQUALS".into(),
+                field_value: CkFilterValue {
+                    value: 0.into(),
+                    kind: "INT64".into(),
+                },
+            });
+        }
+
+        let resp = self.query(QueryRequest {
+            zone_id: ZoneId::notes(),
+            query: CkQuery {
+                record_type: "SFNote".into(),
+                filter_by,
+                sort_by: vec![CkSort {
+                    field_name: "sf_modificationDate".into(),
+                    ascending: false,
+                }],
+            },
+            results_limit: Some(1),
+            desired_keys: None,
+            continuation_marker: None,
+        })?;
+
+        resp.records
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("note not found: {title}"))
+    }
+
+    /// Fetch a single SFNoteTag by its recordName.
+    pub fn fetch_tag(&self, record_name: &str) -> Result<CkRecord> {
+        let resp = self.query(QueryRequest {
+            zone_id: ZoneId::default(),
+            query: CkQuery {
+                record_type: "SFNoteTag".into(),
+                filter_by: vec![CkFilter {
+                    field_name: "uniqueIdentifier".into(),
+                    comparator: "EQUALS".into(),
+                    field_value: CkFilterValue {
+                        value: record_name.to_string().into(),
+                        kind: "STRING".into(),
+                    },
+                }],
+                sort_by: vec![],
+            },
+            results_limit: Some(1),
+            desired_keys: None,
+            continuation_marker: None,
+        })?;
+        resp.records
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("tag not found: {record_name}"))
     }
 
     /// Upload a file to CloudKit asset storage. Returns the receipt to embed in a record field.
@@ -266,25 +416,28 @@ impl CloudKitClient {
         tag_uuids: Vec<String>,
         tag_names: Vec<String>,
     ) -> Result<CkRecord> {
+        let device_name = self.device_name();
         let now_ms = now_ms();
         let note_uuid = Uuid::new_v4().to_string().to_uppercase();
         let title = extract_title(text);
         let subtitle = extract_subtitle(text);
-        let clock = vector_clock::increment(None, &vector_clock::local_device_id())?;
+        let clock = vector_clock::increment(None, self.vector_clock_device())?;
 
         let mut fields: Fields = HashMap::new();
         fields.insert("uniqueIdentifier".into(), CkField::string(&note_uuid));
         fields.insert("title".into(), CkField::string(&title));
+        fields.insert("subtitle".into(), CkField::string_null());
         fields.insert("subtitleADP".into(), CkField::string_encrypted(&subtitle));
         fields.insert("textADP".into(), CkField::string_encrypted(text));
+        fields.insert("text".into(), CkField::string_null());
         fields.insert("tags".into(), CkField::string_list(tag_uuids));
         fields.insert("tagsStrings".into(), CkField::string_list(tag_names));
         fields.insert("files".into(), CkField::string_list(vec![]));
         fields.insert("linkedBy".into(), CkField::string_list(vec![]));
         fields.insert("linkingTo".into(), CkField::string_list(vec![]));
-        fields.insert("pinnedInTagsStrings".into(), CkField::string_list(vec![]));
+        fields.insert("pinnedInTagsStrings".into(), CkField::string_list_null());
         fields.insert("vectorClock".into(), CkField::bytes(&clock));
-        fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
+        fields.insert("lastEditingDevice".into(), CkField::string(device_name));
         fields.insert("version".into(), CkField::int64(3));
         fields.insert("encrypted".into(), CkField::int64(0));
         fields.insert("locked".into(), CkField::int64(0));
@@ -298,14 +451,29 @@ impl CloudKitClient {
         fields.insert("todoIncompleted".into(), CkField::int64(0));
         fields.insert("sf_creationDate".into(), CkField::timestamp(now_ms));
         fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms + 1));
+        fields.insert("trashedDate".into(), CkField::timestamp_null());
+        fields.insert("pinnedDate".into(), CkField::timestamp_null());
+        fields.insert("archivedDate".into(), CkField::timestamp_null());
+        fields.insert("lockedDate".into(), CkField::timestamp_null());
+        fields.insert("conflictUniqueIdentifier".into(), CkField::string_null());
+        fields.insert(
+            "conflictUniqueIdentifierDate".into(),
+            CkField::timestamp_null(),
+        );
+        fields.insert("encryptedData".into(), CkField::string_null());
 
         let op = ModifyOperation {
             operation_type: "create".into(),
+            record_type: "SFNote".into(),
             record: CkRecord {
                 record_name: note_uuid.clone(),
                 record_type: "SFNote".into(),
+                zone_id: None,
                 fields,
+                plugin_fields: HashMap::new(),
                 record_change_tag: None,
+                created: None,
+                modified: None,
                 deleted: false,
                 server_error_code: None,
                 reason: None,
@@ -321,13 +489,14 @@ impl CloudKitClient {
     /// Update a note's text. Fetches the current record first to obtain the recordChangeTag
     /// and existing vector clock, then writes back the updated content.
     pub fn update_note_text(&self, record_name: &str, new_text: &str) -> Result<CkRecord> {
+        let device_name = self.device_name();
         let current = self.fetch_note(record_name)?;
         let change_tag = current
             .record_change_tag
             .clone()
             .ok_or_else(|| anyhow!("note {record_name} has no recordChangeTag"))?;
         let existing_clock = current.str_field("vectorClock");
-        let clock = vector_clock::increment(existing_clock, &vector_clock::local_device_id())?;
+        let clock = vector_clock::increment(existing_clock, self.vector_clock_device())?;
 
         let title = extract_title(new_text);
         let subtitle = extract_subtitle(new_text);
@@ -341,7 +510,7 @@ impl CloudKitClient {
         fields.insert("subtitleADP".into(), CkField::string_encrypted(&subtitle));
         fields.insert("subtitle".into(), CkField::string_null());
         fields.insert("vectorClock".into(), CkField::bytes(&clock));
-        fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
+        fields.insert("lastEditingDevice".into(), CkField::string(device_name));
         fields.insert("version".into(), CkField::int64(3));
         fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms));
         fields.insert("todoCompleted".into(), CkField::int64(todo_counts.0));
@@ -353,11 +522,16 @@ impl CloudKitClient {
 
         let op = ModifyOperation {
             operation_type: "update".into(),
+            record_type: "SFNote".into(),
             record: CkRecord {
                 record_name: record_name.to_string(),
                 record_type: "SFNote".into(),
+                zone_id: None,
                 fields,
+                plugin_fields: HashMap::new(),
                 record_change_tag: Some(change_tag),
+                created: current.created.clone(),
+                modified: current.modified.clone(),
                 deleted: false,
                 server_error_code: None,
                 reason: None,
@@ -379,6 +553,7 @@ impl CloudKitClient {
         data: &[u8],
         position: AttachPosition,
     ) -> Result<()> {
+        let device_name = self.device_name();
         // Determine record type and mime type from extension
         let ext = std::path::Path::new(filename)
             .extension()
@@ -408,7 +583,7 @@ impl CloudKitClient {
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
         let existing_clock = note.str_field("vectorClock");
-        let clock = vector_clock::increment(existing_clock, &vector_clock::local_device_id())?;
+        let clock = vector_clock::increment(existing_clock, self.vector_clock_device())?;
 
         // Build updated note text with file embedded
         let current_text = note.str_field("textADP").unwrap_or("").to_string();
@@ -494,7 +669,7 @@ impl CloudKitClient {
         note_fields.insert("hasImages".into(), CkField::int64(has_images));
         note_fields.insert("hasFiles".into(), CkField::int64(has_files));
         note_fields.insert("vectorClock".into(), CkField::bytes(&clock));
-        note_fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
+        note_fields.insert("lastEditingDevice".into(), CkField::string(device_name));
         note_fields.insert("version".into(), CkField::int64(3));
         note_fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms + 2));
         note_fields.insert("todoCompleted".into(), CkField::int64(todo_counts.0));
@@ -511,11 +686,16 @@ impl CloudKitClient {
         self.modify(vec![
             ModifyOperation {
                 operation_type: "create".into(),
+                record_type: record_type.to_string(),
                 record: CkRecord {
                     record_name: file_record_uuid,
                     record_type: record_type.to_string(),
+                    zone_id: None,
                     fields: file_fields,
+                    plugin_fields: HashMap::new(),
                     record_change_tag: None,
+                    created: None,
+                    modified: None,
                     deleted: false,
                     server_error_code: None,
                     reason: None,
@@ -523,11 +703,16 @@ impl CloudKitClient {
             },
             ModifyOperation {
                 operation_type: "update".into(),
+                record_type: "SFNote".into(),
                 record: CkRecord {
                     record_name: note_record_name.to_string(),
                     record_type: "SFNote".into(),
+                    zone_id: None,
                     fields: note_fields,
+                    plugin_fields: HashMap::new(),
                     record_change_tag: Some(change_tag),
+                    created: note.created.clone(),
+                    modified: note.modified.clone(),
                     deleted: false,
                     server_error_code: None,
                     reason: None,
@@ -540,22 +725,21 @@ impl CloudKitClient {
 
     /// Move a note to trash (sets trashed=1, trashedDate=now, increments vector clock).
     pub fn trash_note(&self, record_name: &str) -> Result<()> {
+        let device_name = self.device_name();
         let current = self.fetch_note(record_name)?;
         let change_tag = current
             .record_change_tag
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
-        let clock = vector_clock::increment(
-            current.str_field("vectorClock"),
-            &vector_clock::local_device_id(),
-        )?;
+        let clock =
+            vector_clock::increment(current.str_field("vectorClock"), self.vector_clock_device())?;
         let now_ms = now_ms();
 
         let mut fields: Fields = HashMap::new();
         fields.insert("trashed".into(), CkField::int64(1));
         fields.insert("trashedDate".into(), CkField::timestamp(now_ms));
         fields.insert("vectorClock".into(), CkField::bytes(&clock));
-        fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
+        fields.insert("lastEditingDevice".into(), CkField::string(device_name));
         fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms + 1));
         fields.insert(
             "uniqueIdentifier".into(),
@@ -564,11 +748,16 @@ impl CloudKitClient {
 
         self.modify(vec![ModifyOperation {
             operation_type: "update".into(),
+            record_type: "SFNote".into(),
             record: CkRecord {
                 record_name: record_name.to_string(),
                 record_type: "SFNote".into(),
+                zone_id: None,
                 fields,
+                plugin_fields: HashMap::new(),
                 record_change_tag: Some(change_tag),
+                created: current.created.clone(),
+                modified: current.modified.clone(),
                 deleted: false,
                 server_error_code: None,
                 reason: None,
@@ -579,22 +768,21 @@ impl CloudKitClient {
 
     /// Archive a note.
     pub fn archive_note(&self, record_name: &str) -> Result<()> {
+        let device_name = self.device_name();
         let current = self.fetch_note(record_name)?;
         let change_tag = current
             .record_change_tag
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
-        let clock = vector_clock::increment(
-            current.str_field("vectorClock"),
-            &vector_clock::local_device_id(),
-        )?;
+        let clock =
+            vector_clock::increment(current.str_field("vectorClock"), self.vector_clock_device())?;
         let now_ms = now_ms();
 
         let mut fields: Fields = HashMap::new();
         fields.insert("archived".into(), CkField::int64(1));
         fields.insert("archivedDate".into(), CkField::timestamp(now_ms));
         fields.insert("vectorClock".into(), CkField::bytes(&clock));
-        fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
+        fields.insert("lastEditingDevice".into(), CkField::string(device_name));
         fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms + 1));
         fields.insert(
             "uniqueIdentifier".into(),
@@ -603,12 +791,44 @@ impl CloudKitClient {
 
         self.modify(vec![ModifyOperation {
             operation_type: "update".into(),
+            record_type: "SFNote".into(),
             record: CkRecord {
                 record_name: record_name.to_string(),
                 record_type: "SFNote".into(),
+                zone_id: None,
                 fields,
+                plugin_fields: HashMap::new(),
                 record_change_tag: Some(change_tag),
+                created: current.created.clone(),
+                modified: current.modified.clone(),
                 deleted: false,
+                server_error_code: None,
+                reason: None,
+            },
+        }])?;
+        Ok(())
+    }
+
+    pub fn delete_note(&self, record_name: &str) -> Result<()> {
+        let current = self.fetch_note(record_name)?;
+        let change_tag = current
+            .record_change_tag
+            .clone()
+            .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
+
+        self.modify(vec![ModifyOperation {
+            operation_type: "delete".into(),
+            record_type: "SFNote".into(),
+            record: CkRecord {
+                record_name: record_name.to_string(),
+                record_type: "SFNote".into(),
+                zone_id: None,
+                fields: HashMap::new(),
+                plugin_fields: HashMap::new(),
+                record_change_tag: Some(change_tag),
+                created: current.created.clone(),
+                modified: current.modified.clone(),
+                deleted: true,
                 server_error_code: None,
                 reason: None,
             },
@@ -686,4 +906,21 @@ fn mime_for_ext(ext: &str) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_encodes_plus_in_cloudkit_tokens() {
+        let client = CloudKitClient::new(AuthConfig {
+            ck_web_auth_token: "abc+123/xyz".into(),
+        })
+        .unwrap();
+
+        let url = client.url("/records/query");
+        assert!(url.contains("ckWebAuthToken=abc%2B123/xyz"));
+        assert!(!url.contains("ckWebAuthToken=abc+123/xyz"));
+    }
 }

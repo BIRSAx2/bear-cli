@@ -11,8 +11,20 @@ pub struct ZoneId {
 
 impl Default for ZoneId {
     fn default() -> Self {
+        Self::notes()
+    }
+}
+
+impl ZoneId {
+    pub fn notes() -> Self {
         Self {
             zone_name: "Notes".into(),
+        }
+    }
+
+    pub fn default_zone() -> Self {
+        Self {
+            zone_name: "_defaultZone".into(),
         }
     }
 }
@@ -121,6 +133,7 @@ pub struct AssetToken {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetUploadRequest {
+    #[serde(rename = "zoneID")]
     pub zone_id: ZoneId,
     pub tokens: Vec<AssetToken>,
 }
@@ -165,10 +178,15 @@ pub struct CkRecord {
     pub record_name: String,
     #[serde(default)]
     pub record_type: String,
+    #[serde(rename = "zoneID", skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<ZoneId>,
     #[serde(default)]
     pub fields: Fields,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub plugin_fields: HashMap<String, JsonValue>,
     pub record_change_tag: Option<String>,
+    pub created: Option<JsonValue>,
+    pub modified: Option<JsonValue>,
     #[serde(default)]
     pub deleted: bool,
     // Present on error responses:
@@ -183,12 +201,14 @@ pub struct CkRecord {
 pub struct ModifyOperation {
     pub operation_type: String, // "create" | "update" | "delete"
     pub record: CkRecord,
+    pub record_type: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModifyRequest {
     pub operations: Vec<ModifyOperation>,
+    #[serde(rename = "zoneID")]
     pub zone_id: ZoneId,
 }
 
@@ -233,6 +253,7 @@ pub struct CkSort {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryRequest {
+    #[serde(rename = "zoneID")]
     pub zone_id: ZoneId,
     pub query: CkQuery,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -255,6 +276,7 @@ pub struct QueryResponse {
 #[serde(rename_all = "camelCase")]
 pub struct LookupRequest {
     pub records: Vec<LookupRecord>,
+    #[serde(rename = "zoneID")]
     pub zone_id: ZoneId,
 }
 
@@ -293,5 +315,41 @@ impl CkRecord {
                     .collect()
             })
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modify_request_serializes_zone_id_exactly() {
+        let json = serde_json::to_value(ModifyRequest {
+            operations: vec![],
+            zone_id: ZoneId::notes(),
+        })
+        .unwrap();
+
+        assert!(json.get("zoneID").is_some());
+        assert!(json.get("zoneId").is_none());
+    }
+
+    #[test]
+    fn query_request_serializes_zone_id_exactly() {
+        let json = serde_json::to_value(QueryRequest {
+            zone_id: ZoneId::notes(),
+            query: CkQuery {
+                record_type: "SFNote".into(),
+                filter_by: vec![],
+                sort_by: vec![],
+            },
+            results_limit: Some(1),
+            desired_keys: None,
+            continuation_marker: None,
+        })
+        .unwrap();
+
+        assert!(json.get("zoneID").is_some());
+        assert!(json.get("zoneId").is_none());
     }
 }

@@ -31,6 +31,8 @@ pub enum Commands {
     Auth(AuthCommand),
     /// Print the full text of a single note.
     OpenNote(OpenNoteCommand),
+    /// Print the raw CloudKit record for a single note.
+    InspectNote(OpenNoteCommand),
     /// List all tags visible in CloudKit.
     Tags,
     /// List notes that belong to one or more tags.
@@ -39,6 +41,8 @@ pub enum Commands {
     Search(SearchCommand),
     /// List notes with lightweight metadata.
     Notes(CloudNotesCommand),
+    /// List or delete orphaned notes written to CloudKit's default zone.
+    PhantomNotes(PhantomNotesCommand),
     /// Export notes to Markdown files.
     Export(ExportCommand),
     /// Find duplicate note titles.
@@ -63,6 +67,8 @@ pub enum Commands {
     AddFile(AddFileCommand),
     /// Move a note to trash.
     Trash(IdOrSearchCommand),
+    /// Permanently delete a note record from CloudKit.
+    Delete(IdOrSearchCommand),
     /// Archive a note.
     Archive(IdOrSearchCommand),
     /// Rename a tag.
@@ -137,6 +143,22 @@ pub struct CloudNotesCommand {
     /// Include archived notes in the result set.
     #[arg(long, default_value_t = false)]
     pub archived: bool,
+    /// Emit machine-readable JSON instead of tab-separated text.
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(Args, Debug)]
+#[command(
+    after_help = "These records exist in CloudKit but are not part of Bear's normal Notes zone.\nExamples:\n  bear phantom-notes\n  bear phantom-notes --delete\n"
+)]
+pub struct PhantomNotesCommand {
+    /// Maximum number of phantom notes to return after CloudKit pagination.
+    #[arg(long, value_name = "N")]
+    pub limit: Option<usize>,
+    /// Hard-delete all listed phantom notes from CloudKit's default zone.
+    #[arg(long, default_value_t = false)]
+    pub delete: bool,
     /// Emit machine-readable JSON instead of tab-separated text.
     #[arg(long, default_value_t = false)]
     pub json: bool,
