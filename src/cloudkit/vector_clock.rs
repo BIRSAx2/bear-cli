@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 use std::io::Cursor;
+use std::process::Command;
 
 use anyhow::{Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use plist::Value;
+use uuid::Uuid;
 
 /// Decode a base64-encoded binary-plist vector clock into a counter map.
 pub fn decode(encoded: &str) -> Result<BTreeMap<String, u64>> {
@@ -41,6 +43,31 @@ pub fn encode(clock: &BTreeMap<String, u64>) -> Result<String> {
     Ok(BASE64.encode(&buf))
 }
 
+/// Return a stable UUID-like key for the local device, matching the shape Bear
+/// uses in vector clocks.
+pub fn local_device_id() -> String {
+    if let Ok(output) = Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if let Some((_, rest)) = line.split_once("\"IOPlatformUUID\" = \"") {
+                    if let Some((uuid, _)) = rest.split_once('"') {
+                        let uuid = uuid.trim();
+                        if !uuid.is_empty() {
+                            return uuid.to_uppercase();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Uuid::new_v4().to_string().to_uppercase()
+}
+
 /// Increment this device's counter, preserving all other device entries.
 /// Pass `None` for `existing` when creating a brand-new note.
 pub fn increment(existing: Option<&str>, device: &str) -> Result<String> {
@@ -66,9 +93,9 @@ mod tests {
 
     #[test]
     fn increment_new_device() {
-        let enc = increment(None, "Bear CLI").unwrap();
+        let enc = increment(None, "94536980-D452-5A88-9C1C-4A4022CFD280").unwrap();
         let clock = decode(&enc).unwrap();
-        assert_eq!(clock["Bear CLI"], 1);
+        assert_eq!(clock["94536980-D452-5A88-9C1C-4A4022CFD280"], 1);
     }
 
     #[test]

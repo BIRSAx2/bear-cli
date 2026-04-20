@@ -19,6 +19,7 @@ impl Default for ZoneId {
 
 /// A CloudKit field value with type tag and optional encryption flag.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CkField {
     #[serde(rename = "type")]
     pub kind: String,
@@ -158,11 +159,13 @@ pub struct AssetUploadResult {
 
 pub type Fields = HashMap<String, CkField>;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CkRecord {
     pub record_name: String,
+    #[serde(default)]
     pub record_type: String,
+    #[serde(default)]
     pub fields: Fields,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub record_change_tag: Option<String>,

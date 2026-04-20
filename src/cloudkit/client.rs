@@ -270,21 +270,19 @@ impl CloudKitClient {
         let note_uuid = Uuid::new_v4().to_string().to_uppercase();
         let title = extract_title(text);
         let subtitle = extract_subtitle(text);
-        let clock = vector_clock::increment(None, DEVICE_NAME)?;
+        let clock = vector_clock::increment(None, &vector_clock::local_device_id())?;
 
         let mut fields: Fields = HashMap::new();
         fields.insert("uniqueIdentifier".into(), CkField::string(&note_uuid));
         fields.insert("title".into(), CkField::string(&title));
-        fields.insert("subtitle".into(), CkField::string_null());
         fields.insert("subtitleADP".into(), CkField::string_encrypted(&subtitle));
         fields.insert("textADP".into(), CkField::string_encrypted(text));
-        fields.insert("text".into(), CkField::string_null());
         fields.insert("tags".into(), CkField::string_list(tag_uuids));
         fields.insert("tagsStrings".into(), CkField::string_list(tag_names));
         fields.insert("files".into(), CkField::string_list(vec![]));
         fields.insert("linkedBy".into(), CkField::string_list(vec![]));
         fields.insert("linkingTo".into(), CkField::string_list(vec![]));
-        fields.insert("pinnedInTagsStrings".into(), CkField::string_list_null());
+        fields.insert("pinnedInTagsStrings".into(), CkField::string_list(vec![]));
         fields.insert("vectorClock".into(), CkField::bytes(&clock));
         fields.insert("lastEditingDevice".into(), CkField::string(DEVICE_NAME));
         fields.insert("version".into(), CkField::int64(3));
@@ -300,16 +298,6 @@ impl CloudKitClient {
         fields.insert("todoIncompleted".into(), CkField::int64(0));
         fields.insert("sf_creationDate".into(), CkField::timestamp(now_ms));
         fields.insert("sf_modificationDate".into(), CkField::timestamp(now_ms + 1));
-        fields.insert("trashedDate".into(), CkField::timestamp_null());
-        fields.insert("pinnedDate".into(), CkField::timestamp_null());
-        fields.insert("archivedDate".into(), CkField::timestamp_null());
-        fields.insert("lockedDate".into(), CkField::timestamp_null());
-        fields.insert("conflictUniqueIdentifier".into(), CkField::string_null());
-        fields.insert(
-            "conflictUniqueIdentifierDate".into(),
-            CkField::timestamp_null(),
-        );
-        fields.insert("encryptedData".into(), CkField::string_null());
 
         let op = ModifyOperation {
             operation_type: "create".into(),
@@ -339,7 +327,7 @@ impl CloudKitClient {
             .clone()
             .ok_or_else(|| anyhow!("note {record_name} has no recordChangeTag"))?;
         let existing_clock = current.str_field("vectorClock");
-        let clock = vector_clock::increment(existing_clock, DEVICE_NAME)?;
+        let clock = vector_clock::increment(existing_clock, &vector_clock::local_device_id())?;
 
         let title = extract_title(new_text);
         let subtitle = extract_subtitle(new_text);
@@ -420,7 +408,7 @@ impl CloudKitClient {
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
         let existing_clock = note.str_field("vectorClock");
-        let clock = vector_clock::increment(existing_clock, DEVICE_NAME)?;
+        let clock = vector_clock::increment(existing_clock, &vector_clock::local_device_id())?;
 
         // Build updated note text with file embedded
         let current_text = note.str_field("textADP").unwrap_or("").to_string();
@@ -557,7 +545,10 @@ impl CloudKitClient {
             .record_change_tag
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
-        let clock = vector_clock::increment(current.str_field("vectorClock"), DEVICE_NAME)?;
+        let clock = vector_clock::increment(
+            current.str_field("vectorClock"),
+            &vector_clock::local_device_id(),
+        )?;
         let now_ms = now_ms();
 
         let mut fields: Fields = HashMap::new();
@@ -593,7 +584,10 @@ impl CloudKitClient {
             .record_change_tag
             .clone()
             .ok_or_else(|| anyhow!("note has no recordChangeTag"))?;
-        let clock = vector_clock::increment(current.str_field("vectorClock"), DEVICE_NAME)?;
+        let clock = vector_clock::increment(
+            current.str_field("vectorClock"),
+            &vector_clock::local_device_id(),
+        )?;
         let now_ms = now_ms();
 
         let mut fields: Fields = HashMap::new();
