@@ -4,14 +4,6 @@ use bear_rs::{
     store::{EditOp, ListInput},
 };
 
-macro_rules! check {
-    ($label:expr, $val:expr) => {{
-        let v = $val;
-        println!("  {:<30} {:?}", $label, v);
-        v
-    }};
-}
-
 fn section(name: &str) {
     println!("\n── {} {}", name, "─".repeat(50 - name.len()));
 }
@@ -26,17 +18,30 @@ fn main() -> anyhow::Result<()> {
     println!("  {:<30} {} notes", "list_notes (default)", notes.len());
     assert!(!notes.is_empty(), "expected at least one note");
 
-    let limited = store.list_notes(&ListInput { limit: Some(1), include_tags: true, ..Default::default() })?;
+    let limited = store.list_notes(&ListInput {
+        limit: Some(1),
+        include_tags: true,
+        ..Default::default()
+    })?;
     println!("  {:<30} {} note", "list_notes (limit=1)", limited.len());
     assert_eq!(limited.len(), 1);
 
     let first = &notes[0];
     let note = store.get_note(Some(&first.id), None, true, true)?;
-    println!("  {:<30} title={:?} tags={:?} attachments={} pins={:?}",
-        "get_note (id)", note.title, note.tags, note.attachments.len(), note.pinned_in_tags);
+    println!(
+        "  {:<30} title={:?} tags={:?} attachments={} pins={:?}",
+        "get_note (id)",
+        note.title,
+        note.tags,
+        note.attachments.len(),
+        note.pinned_in_tags
+    );
 
     let by_title = store.get_note(None, Some(&note.title), false, false)?;
-    assert_eq!(by_title.id, note.id, "get_note by title returned wrong note");
+    assert_eq!(
+        by_title.id, note.id,
+        "get_note by title returned wrong note"
+    );
     println!("  {:<30} ok", "get_note (--title)");
 
     let cat = store.cat_note(Some(&first.id), None, None, Some(40))?;
@@ -46,11 +51,19 @@ fn main() -> anyhow::Result<()> {
     println!("  {:<30} {:?}", "cat_note (offset=10 limit=20)", cat_offset);
 
     let search_results = store.search_notes("@todo", None)?;
-    println!("  {:<30} {} notes", "search_notes (@todo)", search_results.len());
+    println!(
+        "  {:<30} {} notes",
+        "search_notes (@todo)",
+        search_results.len()
+    );
 
     let search_limited = store.search_notes("@todo", Some(1))?;
     assert!(search_limited.len() <= 1);
-    println!("  {:<30} {} note", "search_notes (@todo limit=1)", search_limited.len());
+    println!(
+        "  {:<30} {} note",
+        "search_notes (@todo limit=1)",
+        search_limited.len()
+    );
 
     let tags = store.list_tags(None, None)?;
     println!("  {:<30} {} tags", "list_tags (all)", tags.len());
@@ -77,19 +90,38 @@ fn main() -> anyhow::Result<()> {
 
     // if_not_exists returns existing note
     let same = store.create_note("# bear-rs smoke test\n\nDuplicate.", &[], true)?;
-    assert_eq!(same.id, note.id, "if_not_exists should return existing note");
-    println!("  {:<30} ok (returned same id)", "create_note if_not_exists");
+    assert_eq!(
+        same.id, note.id,
+        "if_not_exists should return existing note"
+    );
+    println!(
+        "  {:<30} ok (returned same id)",
+        "create_note if_not_exists"
+    );
 
     // ── write_note ────────────────────────────────────────────────────────────
 
-    store.write_note(Some(&note.id), None, "# bear-rs smoke test\n\nRewritten.", None)?;
+    store.write_note(
+        Some(&note.id),
+        None,
+        "# bear-rs smoke test\n\nRewritten.",
+        None,
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
-    assert!(after.text.contains("Rewritten"), "write_note did not update text");
+    assert!(
+        after.text.contains("Rewritten"),
+        "write_note did not update text"
+    );
     println!("  {:<30} {:?}", "write_note", after.text);
 
     // write_note with correct base hash
     let hash = after.hash();
-    store.write_note(Some(&note.id), None, "# bear-rs smoke test\n\nHash-guarded write.", Some(&hash))?;
+    store.write_note(
+        Some(&note.id),
+        None,
+        "# bear-rs smoke test\n\nHash-guarded write.",
+        Some(&hash),
+    )?;
     println!("  {:<30} ok", "write_note (base hash)");
 
     // write_note with wrong hash should fail
@@ -100,60 +132,100 @@ fn main() -> anyhow::Result<()> {
     // ── append ────────────────────────────────────────────────────────────────
 
     section("append");
-    store.append_to_note(Some(&note.id), None, "Appended at end.", InsertPosition::End, true, Default::default())?;
+    store.append_to_note(
+        Some(&note.id),
+        None,
+        "Appended at end.",
+        InsertPosition::End,
+        true,
+        Default::default(),
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
-    assert!(after.text.ends_with("Appended at end."), "append End failed: {:?}", after.text);
+    assert!(
+        after.text.ends_with("Appended at end."),
+        "append End failed: {:?}",
+        after.text
+    );
     println!("  {:<30} {:?}", "append (end)", after.text);
 
-    store.append_to_note(Some(&note.id), None, "Prepended line.\n\n", InsertPosition::Beginning, true, Default::default())?;
+    store.append_to_note(
+        Some(&note.id),
+        None,
+        "Prepended line.\n\n",
+        InsertPosition::Beginning,
+        true,
+        Default::default(),
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
-    assert!(after.text.contains("Prepended line."), "append Beginning failed");
+    assert!(
+        after.text.contains("Prepended line."),
+        "append Beginning failed"
+    );
     println!("  {:<30} {:?}", "append (beginning)", after.text);
 
     // ── edit ──────────────────────────────────────────────────────────────────
 
     section("edit");
-    store.edit_note(Some(&note.id), None, &[EditOp {
-        at: "Appended at end.".into(),
-        replace: Some("Replaced text.".into()),
-        insert: None,
-        all: false,
-        ignore_case: false,
-        word: false,
-    }])?;
+    store.edit_note(
+        Some(&note.id),
+        None,
+        &[EditOp {
+            at: "Appended at end.".into(),
+            replace: Some("Replaced text.".into()),
+            insert: None,
+            all: false,
+            ignore_case: false,
+            word: false,
+        }],
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
     assert!(after.text.contains("Replaced text."), "edit replace failed");
     println!("  {:<30} {:?}", "edit (replace)", after.text);
 
-    store.edit_note(Some(&note.id), None, &[EditOp {
-        at: "Prepended".into(),
-        replace: Some("PREPENDED".into()),
-        insert: None,
-        all: false,
-        ignore_case: true,
-        word: false,
-    }])?;
+    store.edit_note(
+        Some(&note.id),
+        None,
+        &[EditOp {
+            at: "Prepended".into(),
+            replace: Some("PREPENDED".into()),
+            insert: None,
+            all: false,
+            ignore_case: true,
+            word: false,
+        }],
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
     assert!(after.text.contains("PREPENDED"), "edit ignore_case failed");
     println!("  {:<30} {:?}", "edit (ignore_case)", after.text);
 
     // edit insert (append to match)
-    store.edit_note(Some(&note.id), None, &[EditOp {
-        at: "Replaced text.".into(),
-        replace: None,
-        insert: Some(" (inserted)".into()),
-        all: false,
-        ignore_case: false,
-        word: false,
-    }])?;
+    store.edit_note(
+        Some(&note.id),
+        None,
+        &[EditOp {
+            at: "Replaced text.".into(),
+            replace: None,
+            insert: Some(" (inserted)".into()),
+            all: false,
+            ignore_case: false,
+            word: false,
+        }],
+    )?;
     let after = store.get_note(Some(&note.id), None, false, false)?;
-    assert!(after.text.contains("Replaced text. (inserted)"), "edit insert failed");
+    assert!(
+        after.text.contains("Replaced text. (inserted)"),
+        "edit insert failed"
+    );
     println!("  {:<30} {:?}", "edit (insert)", after.text);
 
     // search_in_note
     let matches = store.search_in_note(Some(&note.id), None, "PREPENDED", false)?;
     assert!(!matches.is_empty(), "search_in_note returned no matches");
-    println!("  {:<30} {} line(s) matched", "search_in_note", matches.len());
+    println!(
+        "  {:<30} {} line(s) matched",
+        "search_in_note",
+        matches.len()
+    );
 
     // ── tags ──────────────────────────────────────────────────────────────────
 
@@ -205,7 +277,11 @@ fn main() -> anyhow::Result<()> {
     let atts = store.list_attachments(Some(&note.id), None)?;
     let found = atts.iter().find(|a| a.filename == "bear-rs-test.txt");
     assert!(found.is_some(), "add_attachment: file not in list");
-    println!("  {:<30} {:?}", "add_attachment", atts.iter().map(|a| &a.filename).collect::<Vec<_>>());
+    println!(
+        "  {:<30} {:?}",
+        "add_attachment",
+        atts.iter().map(|a| &a.filename).collect::<Vec<_>>()
+    );
 
     let bytes = store.read_attachment(Some(&note.id), None, "bear-rs-test.txt")?;
     assert_eq!(bytes, content, "read_attachment returned wrong bytes");
@@ -213,7 +289,10 @@ fn main() -> anyhow::Result<()> {
 
     store.delete_attachment(Some(&note.id), None, "bear-rs-test.txt")?;
     let atts = store.list_attachments(Some(&note.id), None)?;
-    assert!(atts.iter().all(|a| a.filename != "bear-rs-test.txt"), "delete_attachment failed");
+    assert!(
+        atts.iter().all(|a| a.filename != "bear-rs-test.txt"),
+        "delete_attachment failed"
+    );
     println!("  {:<30} ok", "delete_attachment");
 
     // ── trash / archive / restore ─────────────────────────────────────────────

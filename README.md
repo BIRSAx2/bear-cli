@@ -13,17 +13,30 @@ No network, no CloudKit, no Bear.app process required. Works while Bear is runni
 
 ```toml
 [dependencies]
-bear-rs = "0.1"
+bear-rs = "0.2"
+```
+
+To also get the `bear` CLI and MCP server:
+
+```toml
+[dependencies]
+bear-rs = { version = "0.2", features = ["cli"] }
+```
+
+Or install the binary directly:
+
+```sh
+cargo install bear-rs --features cli
 ```
 
 ## Usage
 
 ```rust
-use bear_rs::{SqliteStore, Note};
+use bear_rs::{SqliteStore, store::ListInput};
 
 // Read
 let store = SqliteStore::open_ro()?;
-let notes = store.list_notes(&Default::default())?;
+let notes = store.list_notes(&ListInput::default())?;
 let note = store.get_note(Some("7E635AD3-..."), None, true, true)?;
 
 // Write
@@ -80,14 +93,22 @@ Open with `SqliteStore::open_ro()` for reads or `SqliteStore::open_rw()` for wri
 `search_notes` accepts Bear's query syntax:
 
 ```
-@today        modified today
-@todo         has incomplete todos
-@pinned       pinned notes
-#tag          has tag
--word         does not contain word
-"exact phrase"
-@lastNdays    modified in last N days
-@date(YYYY-MM-DD)
+@today             modified today
+@yesterday         modified yesterday
+@lastNdays         modified in last N days
+@date(YYYY-MM-DD)  modified on a specific date
+@todo              has incomplete todos
+@done              has completed todos
+@pinned            pinned notes
+@tagged            has at least one tag
+@untagged          has no tags
+@images            has images
+@files             has files
+@code              has code blocks
+@locked            locked notes
+#tag               has tag
+-word              does not contain word
+"exact phrase"     exact phrase match
 ```
 
 ### Export
@@ -103,10 +124,41 @@ let notes: Vec<ExportNote> = store.list_notes(&Default::default())?
 export_notes("./output".as_ref(), &notes, true, true)?;
 ```
 
+## CLI and MCP server
+
+Enable the `cli` feature to build the `bear` binary and access the MCP server:
+
+```sh
+cargo install bear-rs --features cli
+```
+
+```
+bear list
+bear list --tag work --sort modified:desc --format json
+bear show --title "My Note" --fields all,content
+bear search "@today @todo"
+bear create "My Note" --content "Body" --tags work
+bear append --title "My Note" --content "More text"
+bear write <id> --content "# Title\n\nBody"
+bear edit <id> --at "old" --replace "new"
+bear trash --title "My Note"
+bear archive <id>
+bear restore <id>
+bear tags list
+bear tags add <id> work
+bear tags rename old new
+bear pin add <id> global
+bear attachments list <id>
+bear mcp-server
+```
+
+The MCP server speaks JSON-RPC 2.0 over stdin/stdout and exposes one tool per command. Configure it in Claude Desktop or any MCP-compatible client by pointing it at `bear mcp-server`.
+
 ## Development
 
 ```sh
 cargo build
 cargo test
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings                    # library only
+cargo clippy --features cli --all-targets -- -D warnings     # with CLI
 ```
