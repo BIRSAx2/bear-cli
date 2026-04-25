@@ -1,31 +1,25 @@
 [package]
-name = "bear-cli"
-version = "0.4.0"
-description = "A Rust CLI for Bear.app — local SQLite backend, full bearcli command parity"
+name = "bear-rs"
+version = "0.1.0"
+description = "Rust library for reading and writing Bear.app notes via the local SQLite database"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
 readme = "README.md"
-documentation = "https://docs.rs/bear-cli"
+documentation = "https://docs.rs/bear-rs"
 repository = "https://github.com/BIRSAx2/bear-cli"
 homepage = "https://github.com/BIRSAx2/bear-cli"
-keywords = ["bear", "notes", "cli", "macos", "sqlite"]
-categories = ["command-line-utilities"]
+keywords = ["bear", "notes", "macos", "sqlite"]
+categories = ["database", "api-bindings"]
 include = ["src/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE"]
-default-run = "bear"
 
 [dependencies]
 anyhow   = "1.0"
 base64   = "0.22"
 chrono   = { version = "0.4", default-features = false, features = ["clock", "std"] }
-clap     = { version = "4.5", features = ["derive", "env"] }
 plist    = "1.7"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2     = "0.10"
 uuid     = { version = "1.0", features = ["v4"] }
-
-[[bin]]
-name = "bear"
-path = "src/main.rs"

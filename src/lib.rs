@@ -11,13 +11,5 @@ pub mod search;
 pub mod store;
 pub mod verbose;
 
-pub(crate) mod cli;
-pub(crate) mod mcp;
-pub(crate) mod runner;
-
 pub use model::{Attachment, Note, PinRecord, Tag};
 pub use store::SqliteStore;
-
-pub fn run() -> anyhow::Result<()> {
-    runner::run()
-}

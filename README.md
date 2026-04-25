@@ -1,149 +1,107 @@
-# bear-cli
+# bear-rs
 
-`bear-cli` is a native Rust CLI for [Bear](https://bear.app) that talks directly to Bear's CloudKit container.
+Rust library for reading and writing [Bear](https://bear.app) notes directly via the local SQLite database.
 
-## Status
-
-The current crate is a CloudKit-backed CLI and does not yet match Bear.app's
-native `bearcli` binary.
-
-Reverse-engineering notes and a parity roadmap live in
-[`docs/bearcli-parity.md`](docs/bearcli-parity.md).
-
-## Features
-
-- authenticate with Bear's CloudKit web flow
-- list, open, search, and export notes
-- inspect tags and tag membership
-- create notes, edit note text, attach files, trash, and archive
-- rename and delete tags
-- compute duplicates, stats, health checks, and other library summaries from CloudKit data
+No network, no CloudKit, no Bear.app process required. Works while Bear is running or closed.
 
 ## Requirements
 
 - macOS
-- a Bear account with iCloud sync enabled
-- network access to Apple's CloudKit endpoints
+- Bear installed (the database lives in Bear's app group container)
 
 ## Installation
 
-### From crates.io
-
-```sh
-cargo install bear-cli
+```toml
+[dependencies]
+bear-rs = "0.1"
 ```
-
-### From source
-
-```sh
-git clone https://github.com/BIRSAx2/bear-cli
-cd bear-cli
-cargo install --path .
-```
-
-The installed binary name is `bear`.
-
-## Authentication
-
-Authenticate once before using CloudKit-backed commands:
-
-```sh
-bear auth
-```
-
-The auth flow opens a localhost page and prefers Safari for CloudKit sign-in on macOS.
-
-If you already have a valid `ckWebAuthToken`, you can save it directly:
-
-```sh
-bear auth --token '<CK_WEB_AUTH_TOKEN>'
-```
-
-On success the token is saved locally and reused by subsequent commands.
 
 ## Usage
 
-```sh
-bear --help
-bear notes
-bear open-note --title "My Note"
-bear search crypto --json
-bear create "# Scratch"
-bear add-text --title "Scratch" "more text"
+```rust
+use bear_rs::{SqliteStore, Note};
+
+// Read
+let store = SqliteStore::open_ro()?;
+let notes = store.list_notes(&Default::default())?;
+let note = store.get_note(Some("7E635AD3-..."), None, true, true)?;
+
+// Write
+let store = SqliteStore::open_rw()?;
+let note = store.create_note("# My Note\n\nHello world", &["work", "rust"], false)?;
+store.append_to_note(Some(&note.id), None, "more text", Default::default(), true, Default::default())?;
+store.trash_note(Some(&note.id), None)?;
 ```
 
-## Commands
+After any write, `bear-rs` posts the Darwin notification `net.shinyfrog.bear.cli.didRequestRefresh` so Bear's UI refreshes automatically.
 
-### Reading notes and tags
+## API
 
-- `notes`
-- `open-note`
-- `tags`
-- `open-tag`
-- `search`
-- `export`
-- `duplicates`
-- `stats`
-- `health`
-- `untagged`
-- `todo`
-- `today`
-- `locked`
+### `SqliteStore`
 
-Examples:
+Open with `SqliteStore::open_ro()` for reads or `SqliteStore::open_rw()` for writes.
 
-```sh
-bear notes
-bear notes --limit 50
-bear notes --json
-bear open-note --id 721FF116-185F-4474-8730-60D29995A4A4
-bear open-note --title "Systems Security"
-bear search Systems
-bear search Systems --since 2026-04-01 --before 2026-04-17 --json
-bear open-tag work
-bear tags
-bear export ./notes --frontmatter --by-tag
-bear duplicates --json
-bear stats --json
-bear health --json
-bear todo
-bear today
+**Reading**
+
+| Method | Description |
+|---|---|
+| `list_notes(input)` | List notes with optional tag filter, sort, and limit |
+| `get_note(id, title, attachments, pins)` | Fetch a single note by ID or title |
+| `cat_note(id, title, offset, limit)` | Raw note text with optional pagination |
+| `search_notes(query, limit)` | Bear search syntax (`@todo`, `#tag`, `-negation`, etc.) |
+| `search_in_note(id, title, string, ignore_case)` | Line matches within a single note |
+| `list_tags(id, title)` | All tags, or tags for one note |
+| `list_pins(id, title)` | Pin contexts for one or all notes |
+| `list_attachments(id, title)` | Attachments for a note |
+| `read_attachment(id, title, filename)` | Raw attachment bytes |
+
+**Writing**
+
+| Method | Description |
+|---|---|
+| `create_note(text, tags, if_not_exists)` | Create a note; title extracted from first line |
+| `append_to_note(id, title, content, position, update_modified, tag_position)` | Append or prepend text |
+| `write_note(id, title, content, base_hash)` | Overwrite note content; optional hash guard |
+| `edit_note(id, title, ops)` | Find/replace operations |
+| `trash_note(id, title)` | Move to trash |
+| `archive_note(id, title)` | Archive |
+| `restore_note(id, title)` | Restore from trash or archive |
+| `add_tags(id, title, tags)` | Add tags |
+| `remove_tags(id, title, tags)` | Remove tags |
+| `rename_tag(old, new, force)` | Rename tag across all notes |
+| `delete_tag(name)` | Delete tag and remove from all notes |
+| `add_pins(id, title, contexts)` | Pin in contexts (`"global"` or tag name) |
+| `remove_pins(id, title, contexts)` | Unpin |
+| `add_attachment(id, title, filename, data)` | Attach a file |
+| `delete_attachment(id, title, filename)` | Mark attachment unused |
+
+### Search syntax
+
+`search_notes` accepts Bear's query syntax:
+
+```
+@today        modified today
+@todo         has incomplete todos
+@pinned       pinned notes
+#tag          has tag
+-word         does not contain word
+"exact phrase"
+@lastNdays    modified in last N days
+@date(YYYY-MM-DD)
 ```
 
-### Writing notes and tags
+### Export
 
-- `create`
-- `add-text`
-- `add-file`
-- `trash`
-- `archive`
-- `rename-tag`
-- `delete-tag`
+```rust
+use bear_rs::export::{ExportNote, export_notes};
 
-Examples:
+let notes: Vec<ExportNote> = store.list_notes(&Default::default())?
+    .into_iter()
+    .map(Into::into)
+    .collect();
 
-```sh
-bear create "# Scratch"
-bear create "# Project note" -t work -t rust
-bear add-text --title "Scratch" "append me"
-bear add-text --title "Scratch" --mode prepend "top section"
-bear add-text --title "Scratch" --mode replace-all "# Rewritten"
-bear add-file ./note.txt --title "Scratch"
-bear archive --search "old note"
-bear trash --search "temporary"
-bear rename-tag inbox archive/inbox
-bear delete-tag old-tag
+export_notes("./output".as_ref(), &notes, true, true)?;
 ```
-
-## Notes
-
-- All operational commands are CloudKit-based.
-- Authentication is required for both reads and writes.
-- The CloudKit API token used by this project was reverse-engineered from Bear Web's public frontend bundle.
-- The auth flow is browser-sensitive. Safari is the preferred path on macOS.
-- Some large-note edge cases may still require additional CloudKit asset-handling work if Bear stores note bodies outside `textADP`.
-- Matching Bear.app's native `bearcli` will require a local-store backend and
-  native command-surface parity in addition to the current CloudKit support.
 
 ## Development
 
