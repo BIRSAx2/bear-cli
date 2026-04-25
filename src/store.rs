@@ -62,6 +62,7 @@ const NOTE_COLS: &str = "n.Z_PK, n.ZUNIQUEIDENTIFIER, n.ZTITLE, n.ZTEXT,
 
 // ── SqliteStore ───────────────────────────────────────────────────────────────
 
+#[derive(Default)]
 pub struct ListInput<'a> {
     pub tag: Option<&'a str>,
     pub sort: Vec<(SortField, SortDir)>,
